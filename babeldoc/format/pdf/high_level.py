@@ -40,6 +40,9 @@ from babeldoc.format.pdf.document_il.midend.il_translator import ILTranslator
 from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import (
     ILTranslatorLLMOnly,
 )
+from babeldoc.format.pdf.document_il.midend.il_translator_external import (
+    ILTranslatorExternal,
+)
 from babeldoc.format.pdf.document_il.midend.layout_parser import LayoutParser
 from babeldoc.format.pdf.document_il.midend.paragraph_finder import ParagraphFinder
 from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
@@ -995,7 +998,9 @@ def _do_translate_single(
         )
 
     if not translation_config.skip_translation:
-        if support_llm_translate:
+        if translation_config.document_translation_provider is not None:
+            il_translator = ILTranslatorExternal(translation_config)
+        elif support_llm_translate:
             il_translator = ILTranslatorLLMOnly(translate_engine, translation_config)
         else:
             il_translator = ILTranslator(translate_engine, translation_config)

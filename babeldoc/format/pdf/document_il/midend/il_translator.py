@@ -957,6 +957,8 @@ class ILTranslator:
         tracker: ParagraphTranslateTracker,
         page_font_map: dict[str, PdfFont],
         xobj_font_map: dict[int, dict[str, PdfFont]],
+        enforce_min_text_length: bool = True,
+        disable_rich_text_translate_override: bool | None = None,
     ):
         """Pre-translation processing: prepare text for translation."""
         if paragraph.vertical:
@@ -964,11 +966,13 @@ class ILTranslator:
         tracker.set_pdf_unicode(paragraph.unicode)
         if paragraph.xobj_id in xobj_font_map:
             page_font_map = xobj_font_map[paragraph.xobj_id]
-        disable_rich_text_translate = (
-            self.translation_config.disable_rich_text_translate
-        )
-        if not self.support_llm_translate:
-            disable_rich_text_translate = True
+        disable_rich_text_translate = disable_rich_text_translate_override
+        if disable_rich_text_translate is None:
+            disable_rich_text_translate = (
+                self.translation_config.disable_rich_text_translate
+            )
+            if not self.support_llm_translate:
+                disable_rich_text_translate = True
 
         translate_input = self.get_translate_input(
             paragraph, page_font_map, disable_rich_text_translate
@@ -981,7 +985,10 @@ class ILTranslator:
             getattr(translate_input, "original_placeholder_tokens", None),
         )
         text = translate_input.unicode
-        if len(text) < self.translation_config.min_text_length:
+        if (
+            enforce_min_text_length
+            and len(text) < self.translation_config.min_text_length
+        ):
             logger.debug(
                 f"Text too short to translate, skip. Text: {text}. Paragraph id: {paragraph.debug_id}."
             )
