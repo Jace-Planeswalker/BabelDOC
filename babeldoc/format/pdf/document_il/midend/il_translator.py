@@ -47,6 +47,20 @@ from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecu
 logger = logging.getLogger(__name__)
 
 
+def _placeholder_regex(placeholder_factory) -> str:
+    """Accept BabelDOC's legacy string and newer ``(token, regex)`` codecs."""
+    value = placeholder_factory(r"\d+")
+    if isinstance(value, tuple):
+        if len(value) != 2 or not isinstance(value[1], str):
+            raise ValueError("placeholder codec returned an invalid regex tuple")
+        return value[1]
+    sentinel = "BABELDOCPLACEHOLDERID"
+    token = placeholder_factory(sentinel)
+    if not isinstance(token, str):
+        raise ValueError("placeholder codec returned an invalid token")
+    return re.escape(token).replace(re.escape(sentinel), r"\d+")
+
+
 PROMPT_TEMPLATE = Template(
     """$role_block
 
@@ -331,11 +345,22 @@ class ILTranslator:
 
     def __init__(
         self,
-        translate_engine: BaseTranslator,
+        translate_engine: BaseTranslator | None,
         translation_config: TranslationConfig,
         tokenizer=None,
+        placeholder_codec=None,
+        enable_rich_text_placeholders: bool | None = None,
+        rich_text_placeholder_limit: int | None = 40,
     ):
         self.translate_engine = translate_engine
+        self.placeholder_codec = (
+            placeholder_codec if placeholder_codec is not None else translate_engine
+        )
+        if self.placeholder_codec is None:
+            raise ValueError("a translator or placeholder codec is required")
+        if rich_text_placeholder_limit is not None and rich_text_placeholder_limit < 0:
+            raise ValueError("rich_text_placeholder_limit must be non-negative")
+        self.rich_text_placeholder_limit = rich_text_placeholder_limit
         self.translation_config = translation_config
         self.font_mapper = FontMapper(translation_config)
         self.shared_context_cross_split_part = (
@@ -361,6 +386,12 @@ class ILTranslator:
         except NotImplementedError:
             self.support_llm_translate = False
 
+        self.enable_rich_text_placeholders = (
+            self.support_llm_translate
+            if enable_rich_text_placeholders is None
+            else enable_rich_text_placeholders
+        )
+
         self.use_as_fallback = False
         self.add_content_filter_hint_lock = threading.Lock()
         self.docs = None
@@ -368,14 +399,19 @@ class ILTranslator:
         # Pre-compile patterns for placeholder-like tokens that may be hallucinated by LLM.
         # We only consider the same shapes as our own formula & rich-text placeholders.
         self._formula_placeholder_pattern = re.compile(
-            self.translate_engine.get_formular_placeholder(r"\d+")[1], re.IGNORECASE
+            _placeholder_regex(self.placeholder_codec.get_formular_placeholder),
+            re.IGNORECASE,
         )
         self._style_left_placeholder_pattern = re.compile(
-            self.translate_engine.get_rich_text_left_placeholder(r"\d+")[1],
+            _placeholder_regex(
+                self.placeholder_codec.get_rich_text_left_placeholder
+            ),
             re.IGNORECASE,
         )
         self._style_right_placeholder_pattern = re.compile(
-            self.translate_engine.get_rich_text_right_placeholder(r"\d+")[1],
+            _placeholder_regex(
+                self.placeholder_codec.get_rich_text_right_placeholder
+            ),
             re.IGNORECASE,
         )
 
@@ -522,7 +558,7 @@ class ILTranslator:
         formula_id: int,
         paragraph: PdfParagraph,
     ):
-        placeholder = self.translate_engine.get_formular_placeholder(formula_id)
+        placeholder = self.placeholder_codec.get_formular_placeholder(formula_id)
         if isinstance(placeholder, tuple):
             placeholder, regex_pattern = placeholder
         else:
@@ -538,10 +574,10 @@ class ILTranslator:
         composition_id: int,
         paragraph: PdfParagraph,
     ):
-        left_placeholder = self.translate_engine.get_rich_text_left_placeholder(
+        left_placeholder = self.placeholder_codec.get_rich_text_left_placeholder(
             composition_id,
         )
-        right_placeholder = self.translate_engine.get_rich_text_right_placeholder(
+        right_placeholder = self.placeholder_codec.get_rich_text_right_placeholder(
             composition_id,
         )
         if isinstance(left_placeholder, tuple):
@@ -721,7 +757,11 @@ class ILTranslator:
                 return None
 
             # 如果占位符数量超过阈值，且未禁用富文本翻译，则递归调用并禁用富文本翻译
-            if len(placeholders) > 40 and not disable_rich_text_translate:
+            if (
+                self.rich_text_placeholder_limit is not None
+                and len(placeholders) > self.rich_text_placeholder_limit
+                and not disable_rich_text_translate
+            ):
                 logger.warning(
                     f"Too many placeholders ({len(placeholders)}) in paragraph[{paragraph.debug_id}], "
                     "disabling rich text translation for this paragraph",
@@ -967,7 +1007,7 @@ class ILTranslator:
         disable_rich_text_translate = (
             self.translation_config.disable_rich_text_translate
         )
-        if not self.support_llm_translate:
+        if not self.enable_rich_text_placeholders:
             disable_rich_text_translate = True
 
         translate_input = self.get_translate_input(

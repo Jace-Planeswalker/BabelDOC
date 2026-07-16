@@ -36,6 +36,9 @@ from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
     AutomaticTermExtractor,
 )
 from babeldoc.format.pdf.document_il.midend.detect_scanned_file import DetectScannedFile
+from babeldoc.format.pdf.document_il.midend.document_translator import (
+    PreparedDocumentTranslator,
+)
 from babeldoc.format.pdf.document_il.midend.il_translator import ILTranslator
 from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import (
     ILTranslatorLLMOnly,
@@ -241,6 +244,14 @@ def verify_file_hash(file_path: str, expected_hash: str) -> bool:
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest() == expected_hash
+
+
+def calculate_file_sha256(file_path: str | Path) -> str:
+    sha256_hash = hashlib.sha256()
+    with Path(file_path).open("rb") as stream:
+        for byte_block in iter(lambda: stream.read(1024 * 1024), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 
 def translator_supports_llm(translator) -> bool:
@@ -530,6 +541,21 @@ def do_translate(
     try:
         translation_config.progress_monitor = pm
         original_pdf_path = translation_config.input_file
+        if translation_config.document_translation_provider is not None:
+            original_pdf_sha256 = calculate_file_sha256(original_pdf_path)
+            configured_sha256 = (
+                translation_config.document_translation_original_pdf_sha256
+            )
+            if (
+                configured_sha256 is not None
+                and configured_sha256 != original_pdf_sha256
+            ):
+                raise ValueError(
+                    "configured original PDF digest does not match the input file"
+                )
+            translation_config.document_translation_original_pdf_sha256 = (
+                original_pdf_sha256
+            )
         logger.info(f"start to translate: {original_pdf_path}")
         try:
             check_metadata(Document(original_pdf_path))
@@ -620,6 +646,11 @@ def do_translate(
                                     )
                                 )
                                 part_config.input_file = part_temp_input_path
+                                part_config.document_translation_part_key = (
+                                    f"part-{i:04d}-pages-"
+                                    f"{split_point.start_page + 1:06d}-"
+                                    f"{split_point.end_page + 1:06d}"
+                                )
 
                                 temp_doc = Document()
                                 for x in range(
@@ -983,28 +1014,46 @@ def _do_translate_single(
             translation_config.get_working_file_path("styles_and_formulas.json"),
         )
 
-    translate_engine = translation_config.translator
-    term_extraction_engine = translation_config.get_term_extraction_translator()
+    if translation_config.document_translation_provider is not None:
+        document_translator = PreparedDocumentTranslator(
+            translation_config,
+            temp_pdf_path,
+        )
+        docs = document_translator.translate(docs)
+        del document_translator
+        logger.debug(f"finish PreparedDocumentTranslator from {temp_pdf_path}")
+    else:
+        translate_engine = translation_config.translator
+        term_extraction_engine = translation_config.get_term_extraction_translator()
 
-    support_llm_translate = translator_supports_llm(translate_engine)
-    support_llm_term_extraction = translator_supports_llm(term_extraction_engine)
-
-    if support_llm_term_extraction and translation_config.auto_extract_glossary:
-        AutomaticTermExtractor(term_extraction_engine, translation_config).procress(
-            docs
+        support_llm_translate = translator_supports_llm(translate_engine)
+        support_llm_term_extraction = translator_supports_llm(
+            term_extraction_engine
         )
 
-    if not translation_config.skip_translation:
-        if support_llm_translate:
-            il_translator = ILTranslatorLLMOnly(translate_engine, translation_config)
-        else:
-            il_translator = ILTranslator(translate_engine, translation_config)
+        if support_llm_term_extraction and translation_config.auto_extract_glossary:
+            AutomaticTermExtractor(
+                term_extraction_engine,
+                translation_config,
+            ).procress(docs)
 
-        il_translator.translate(docs)
-        del il_translator
-        logger.debug(f"finish ILTranslator from {temp_pdf_path}")
-    else:
-        logger.info("skip ILTranslator")
+        if not translation_config.skip_translation:
+            if support_llm_translate:
+                il_translator = ILTranslatorLLMOnly(
+                    translate_engine,
+                    translation_config,
+                )
+            else:
+                il_translator = ILTranslator(
+                    translate_engine,
+                    translation_config,
+                )
+
+            il_translator.translate(docs)
+            del il_translator
+            logger.debug(f"finish ILTranslator from {temp_pdf_path}")
+        else:
+            logger.info("skip ILTranslator")
 
     if translation_config.debug:
         xml_converter.write_json(
