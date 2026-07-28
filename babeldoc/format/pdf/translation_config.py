@@ -1,5 +1,6 @@
 import enum
 import logging
+import re
 import shutil
 import tempfile
 import threading
@@ -159,7 +160,7 @@ class TranslationConfig:
     # new parameters should be added at the end of the function.
     def __init__(
         self,
-        translator: BaseTranslator,
+        translator: BaseTranslator | None,
         input_file: str | Path,
         lang_in: str,
         lang_out: str,
@@ -217,6 +218,11 @@ class TranslationConfig:
         metadata_extra_data: str | None = None,
         term_pool_max_workers: int | None = None,
         disable_same_text_fallback: bool = False,
+        document_translation_provider=None,
+        document_translation_profile_name: str = "publication",
+        document_translation_profile: dict[str, object] | None = None,
+        document_translation_part_key: str = "whole-document",
+        document_translation_original_pdf_sha256: str | None = None,
     ):
         self.translator = translator
         self.term_extraction_translator = term_extraction_translator or translator
@@ -376,6 +382,49 @@ class TranslationConfig:
             "cache_hit_prompt_tokens": 0,
         }
         self.disable_same_text_fallback = disable_same_text_fallback
+
+        self.document_translation_provider = document_translation_provider
+        self.document_translation_profile_name = (
+            document_translation_profile_name.strip()
+        )
+        if not self.document_translation_profile_name:
+            raise ValueError("document_translation_profile_name must not be empty")
+        if document_translation_profile is not None and not isinstance(
+            document_translation_profile,
+            dict,
+        ):
+            raise TypeError("document_translation_profile must be a dictionary")
+        self.document_translation_profile = (
+            dict(document_translation_profile)
+            if document_translation_profile is not None
+            else {}
+        )
+        self.document_translation_part_key = document_translation_part_key.strip()
+        if not self.document_translation_part_key:
+            raise ValueError("document_translation_part_key must not be empty")
+        if (
+            document_translation_original_pdf_sha256 is not None
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                document_translation_original_pdf_sha256,
+            )
+            is None
+        ):
+            raise ValueError(
+                "document_translation_original_pdf_sha256 must be a lowercase "
+                "SHA-256 digest"
+            )
+        self.document_translation_original_pdf_sha256 = (
+            document_translation_original_pdf_sha256
+        )
+        if self.document_translation_provider is not None:
+            if self.skip_translation or self.only_parse_generate_pdf:
+                raise ValueError(
+                    "document_translation_provider cannot be combined with a "
+                    "translation-skip mode"
+                )
+            # Terminology and model orchestration are external-provider concerns.
+            self.auto_extract_glossary = False
 
         if self.ocr_workaround:
             self.remove_non_formula_lines = False
