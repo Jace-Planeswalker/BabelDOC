@@ -8,7 +8,18 @@ from pathlib import Path
 
 __version__ = "0.6.4"
 
-CACHE_FOLDER = Path.home() / ".cache" / "babeldoc"
+
+def _cache_folder() -> Path:
+    configured = os.environ.get("BABELDOC_CACHE_HOME")
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            raise ValueError("BABELDOC_CACHE_HOME must be an absolute path")
+        return path
+    return Path.home() / ".cache" / "babeldoc"
+
+
+CACHE_FOLDER = _cache_folder()
 
 
 def get_cache_file_path(filename: str, sub_folder: str | None = None) -> Path:
